@@ -442,42 +442,15 @@ func TestMockTransportCallCount(t *testing.T) {
 
 }
 
-func TestRegisterResponderWithQuery(t *testing.T) {
-	// create a custom http client w/ custom Roundtripper
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			Dial: (&net.Dialer{
-				Timeout:   60 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).Dial,
-			TLSHandshakeTimeout: 60 * time.Second,
-		},
-	}
-	// activate mocks for the client
-	ActivateNonDefault(client)
-	defer DeactivateAndReset()
-	body := "hello world!"
-	testUrlPath := "http://acme.test/api"
-	expectedQuery := map[string]string{"a": "1", "b": "2"}
-	RegisterResponderWithQuery("GET", testUrlPath, expectedQuery, NewStringResponder(200, body))
-	testFullUrls := []string{testUrlPath + "?a=1&b=2", testUrlPath + "?b=2&a=1"}
-	for _, url := range testFullUrls {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		data, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(data) != body {
-			t.FailNow()
-		}
+func TestEncode(t *testing.T) {
+	url1 := "hello/world?b=1&query=string&query=aaa&b=a"
+	q1, _ := url.Parse(url1)
+	query1 := Encode(q1.Query())
+	url2 := "hello/world?query=aaa&query=string&b=1&b=a"
+	q2, _ := url.Parse(url2)
+	query2 := Encode(q2.Query())
+
+	if query1 != query2 {
+		t.Fatalf("Not the same! : q1 %s q2 %s", query1, query2)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -44,17 +45,7 @@ type MockTransport struct {
 // implement the http.RoundTripper interface.  You will not interact with this directly, instead
 // the *http.Client you are using will call it for you.
 func (m *MockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	queryAsMap := make(map[string][]string)
-	for k, v := range map[string][]string(req.URL.Query()) {
-		queryAsMap[k] = v
-	}
-
-	query := mapToSortedQuery(queryAsMap)
-	url := req.URL.String()
-
-	if query != nil {
-		url = strings.Replace(url, req.URL.RawQuery, *query, -1)
-	}
+	url := canonicalize(req.URL)
 
 	method := req.Method
 	if method == "" {
@@ -187,49 +178,17 @@ func (m *MockTransport) responderForKey(key string) Responder {
 
 // RegisterResponder adds a new responder, associated with a given HTTP method and URL (or path).  When a
 // request comes in that matches, the responder will be called and the response returned to the client.
-func (m *MockTransport) RegisterResponder(method, url string, responder Responder) {
-	key := method + " " + url
+func (m *MockTransport) RegisterResponder(method, urlString string, responder Responder) {
+	u, err := url.Parse(urlString)
+	if err == nil { // If we can parse the url successfully
+		urlString = canonicalize(u) // Canonicalize it
+	}
 
+	key := method + " " + urlString
 	m.mu.Lock()
 	m.responders[key] = responder
 	m.callCountInfo[key] = 0
 	m.mu.Unlock()
-}
-
-// RegisterResponderWithQuery is same as RegisterResponder, but it doesn't depend on query items order
-func (m *MockTransport) RegisterResponderWithQuery(method, path string, query map[string]string, responder Responder) {
-	url := path
-	mapQuery := make(map[string][]string, len(query))
-	for key, e := range query {
-		mapQuery[key] = []string{e}
-	}
-	queryString := mapToSortedQuery(mapQuery)
-	if queryString != nil {
-		url = path + "?" + *queryString
-	}
-	m.RegisterResponder(method, url, responder)
-}
-
-func mapToSortedQuery(m map[string][]string) *string {
-	if m == nil {
-		return nil
-	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	if len(keys) == 0 {
-		return nil
-	}
-	sort.Strings(keys)
-	var queryArray []string
-	for _, k := range keys {
-		for _, v := range m[k] {
-			queryArray = append(queryArray, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
-	query := strings.Join(queryArray, "&")
-	return &query
 }
 
 // RegisterNoResponder is used to register a responder that will be called if no other responder is
@@ -394,26 +353,6 @@ func RegisterResponder(method, url string, responder Responder) {
 	DefaultTransport.RegisterResponder(method, url, responder)
 }
 
-// RegisterResponderWithQuery it is same as RegisterResponder, but doesn't depends on query objects order.
-//
-// Example:
-// 		func TestFetchArticles(t *testing.T) {
-// 			httpmock.Activate()
-// 			httpmock.DeactivateAndReset()
-// 			expecedQuery := map[string]string{
-//				"a": "1",
-//				"b": "2"
-//			}
-//
-// 			httpmock.RegisterResponderWithQuery("GET", "http://example.com/", expecedQuery,
-// 				httpmock.NewStringResponder("hello world", 200))
-//
-//			// requests to http://example.com?a=1&b=2 and http://example.com?b=2&a=1 will now return 'hello world'
-// 		}
-func RegisterResponderWithQuery(method, path string, query map[string]string, responder Responder) {
-	DefaultTransport.RegisterResponderWithQuery(method, path, query, responder)
-}
-
 // RegisterNoResponder adds a mock that will be called whenever a request for an unregistered URL
 // is received.  The default behavior is to return a connection error.
 //
@@ -427,4 +366,42 @@ func RegisterResponderWithQuery(method, path string, query map[string]string, re
 // 		}
 func RegisterNoResponder(responder Responder) {
 	DefaultTransport.RegisterNoResponder(responder)
+}
+
+func canonicalize(req *url.URL) string {
+	query := Encode(req.Query())
+	url := req.String()
+	if query != "" {
+		url = strings.Replace(url, req.RawQuery, query, -1)
+	}
+	return url
+}
+
+// Encode is mostly taken from the standard libary
+// But it additionally Sorts values to deal with the case
+// Where you have multiple params
+func Encode(v url.Values) string {
+	if v == nil {
+		return ""
+	}
+	var buf strings.Builder
+	keys := make([]string, 0, len(v))
+	for k := range v {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		vs := v[k]
+		keyEscaped := url.QueryEscape(k)
+		sort.Strings(vs) // Sort our possible multiple params
+		for _, v := range vs {
+			if buf.Len() > 0 {
+				buf.WriteByte('&')
+			}
+			buf.WriteString(keyEscaped)
+			buf.WriteByte('=')
+			buf.WriteString(url.QueryEscape(v))
+		}
+	}
+	return buf.String()
 }
